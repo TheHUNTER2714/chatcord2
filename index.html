@@ -1,139 +1,128 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ChatCord – Premium</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    body {
-      margin: 0;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      height: 100vh;
-      overflow: hidden;
-      position: relative;
-      color: white;
+const express = require("express");
+const app = express();
+const server = require("http").createServer(app);
+const io = require("socket.io")(server, { 
+  cors: { 
+    origin: [
+      "https://chatcord-rp4q.onrender.com",
+      "http://localhost:3000"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ["websocket"],
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true
+  }
+});
+
+// Health check
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    websocket: io.engine.clientsCount,
+    uptime: process.uptime()
+  });
+});
+
+// === In-Memory Data ===
+const rooms = new Map(); // Map<roomCode, { name, code, users: [] }>
+const userRooms = new Map(); // Map<socket.id, roomCode>
+
+// === Room Code Generator ===
+function generateRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({ length: 6 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join("");
+}
+
+// === Socket.IO Logic ===
+io.on("connection", (socket) => {
+  console.log("✅ New connection:", socket.id);
+
+  // === Create Room ===
+  socket.on("create_room", ({ roomName, user }) => {
+    const code = generateRoomCode();
+    const room = {
+      name: roomName,
+      code: code,
+      users: [{ id: socket.id, name: user.name }]
+    };
+
+    rooms.set(code, room);
+    userRooms.set(socket.id, code);
+    socket.join(code);
+
+    socket.emit("room_created", room);
+    console.log(`📦 Room created: ${code}`);
+  });
+
+  // === Join Room ===
+  socket.on("join_room", ({ roomCode, user }) => {
+    const room = rooms.get(roomCode);
+    if (!room) {
+      socket.emit("room_not_found");
+      return;
     }
 
-    .bg-animated {
-      background: linear-gradient(135deg, #4f46e5, #9333ea, #06b6d4, #3b82f6);
-      background-size: 600% 600%;
-      animation: animatedGradient 15s ease infinite;
+    room.users.push({ id: socket.id, name: user.name });
+    userRooms.set(socket.id, roomCode);
+    socket.join(roomCode);
+
+    socket.emit("room_joined", { room, users: room.users });
+    socket.to(roomCode).emit("user_joined", user);
+  });
+
+  // === Get Room Users ===
+  socket.on("get_room_users", ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    if (room) {
+      socket.emit("room_users", room.users);
     }
+  });
 
-    @keyframes animatedGradient {
-      0% { background-position: 0% 50%; }
-      50% { background-position: 100% 50%; }
-      100% { background-position: 0% 50%; }
+  // === Send Message ===
+  socket.on("send_message", (message) => {
+    const roomCode = message.roomCode;
+    socket.to(roomCode).emit("new_message", message);
+    socket.emit("new_message", message); // This will send the message back to the sender
+  });
+
+  // === Leave Room ===
+  socket.on("leave_room", ({ roomCode, userId }) => {
+    const room = rooms.get(roomCode);
+    if (room) {
+      room.users = room.users.filter(u => u.id !== userId);
+      socket.leave(roomCode);
+      userRooms.delete(socket.id);
+      socket.to(roomCode).emit("user_left", { id: userId });
     }
+  });
 
-    .fade-in {
-      animation: fadeIn 1.4s ease both;
-      z-index: 10;
+  // === Disconnect Cleanup ===
+  socket.on("disconnect", () => {
+    console.log("❌ Disconnected:", socket.id);
+    const roomCode = userRooms.get(socket.id);
+    if (!roomCode) return;
+
+    const room = rooms.get(roomCode);
+    if (!room) return;
+
+    room.users = room.users.filter(u => u.id !== socket.id);
+    socket.to(roomCode).emit("user_left", { id: socket.id });
+    userRooms.delete(socket.id);
+
+    if (room.users.length === 0) {
+      rooms.delete(roomCode);
+      console.log(`🗑️ Room deleted: ${roomCode}`);
     }
+  });
+});
 
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    #bubbleCanvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      z-index: 1;
-    }
-
-    .content {
-      z-index: 10;
-    }
-  </style>
-</head>
-<body class="bg-animated flex items-center justify-center">
-
-  <!-- Bubble Canvas -->
-  <canvas id="bubbleCanvas"></canvas>
-
-  <!-- Main Content -->
-  <div class="text-center fade-in p-6 max-w-xl content">
-    <h1 class="text-5xl font-extrabold mb-6 drop-shadow-lg">ChatCord</h1>
-    <p id="feature-text" class="text-lg opacity-90 mb-8 transition-all duration-700">
-      Secure, real-time chat with code-protected rooms.
-    </p>
-    <a href="public/index.html">
-      <button class="bg-white text-indigo-700 font-semibold px-8 py-3 rounded-full shadow-xl hover:bg-indigo-100 transition duration-300">
-        Get Started
-      </button>
-    </a>
-  </div>
-
-  <script>
-    const features = [
-      "Secure, real-time chat with code-protected rooms.",
-      "Built for seamless conversations and collaboration.",
-      "Custom avatars, themes, and clean user interface.",
-      "No sign-up required — instant room access.",
-      "Powered by Socket.IO, Express & TailwindCSS."
-    ];
-
-    function rotateFeatureText() {
-      const textEl = document.getElementById("feature-text");
-      const next = features[Math.floor(Math.random() * features.length)];
-      textEl.style.opacity = "0";
-      setTimeout(() => {
-        textEl.textContent = next;
-        textEl.style.opacity = "1";
-      }, 500);
-    }
-
-    setInterval(rotateFeatureText, 4000);
-  </script>
-
-  <!-- Bubble Animation -->
-  <script>
-    const canvas = document.getElementById("bubbleCanvas");
-    const ctx = canvas.getContext("2d");
-
-    let bubbles = [];
-
-    function resizeCanvas() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
-
-    function createBubbles() {
-      for (let i = 0; i < 30; i++) {
-        bubbles.push({
-          x: Math.random() * canvas.width,
-          y: Math.random() * canvas.height,
-          radius: Math.random() * 10 + 5,
-          speedY: Math.random() * 1 + 0.5,
-          alpha: Math.random() * 0.4 + 0.1
-        });
-      }
-    }
-
-    function animateBubbles() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      for (let b of bubbles) {
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255, 255, 255, ${b.alpha})`;
-        ctx.fill();
-        b.y -= b.speedY;
-        if (b.y < -b.radius) {
-          b.y = canvas.height + b.radius;
-          b.x = Math.random() * canvas.width;
-        }
-      }
-      requestAnimationFrame(animateBubbles);
-    }
-
-    createBubbles();
-    animateBubbles();
-  </script>
-</body>
-</html>
+// === Server Start ===
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
