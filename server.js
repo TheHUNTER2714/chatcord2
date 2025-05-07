@@ -73,12 +73,6 @@ io.on("connection", (socket) => {
 
     socket.emit("room_joined", { room, users: room.users });
     socket.to(roomCode).emit("user_joined", user);
-
-    // 🔔 Send join notification
-    socket.to(roomCode).emit("notification", {
-      type: "user_joined",
-      message: `${user.name} joined the chat.`
-    });
   });
 
   // === Get Room Users ===
@@ -92,51 +86,18 @@ io.on("connection", (socket) => {
   // === Send Message ===
   socket.on("send_message", (message) => {
     const roomCode = message.roomCode;
-    const timestamp = new Date().toISOString();
-    const messageWithTimestamp = { ...message, timestamp };
-
-    const room = rooms.get(roomCode);
-    if (!room) return;
-
-    // 🔔 Mention detection
-    const mentionedUser = room.users.find(u =>
-      message.text.includes(`@${u.name}`)
-    );
-    if (mentionedUser) {
-      io.to(mentionedUser.id).emit("notification", {
-        type: "mention",
-        message: `You were mentioned by ${message.user.name}`
-      });
-    }
-
-    socket.to(roomCode).emit("new_message", messageWithTimestamp);
-    socket.emit("new_message", messageWithTimestamp);
-  });
-
-  // === Typing Indicator ===
-  socket.on("typing", ({ roomCode, userName }) => {
-    socket.to(roomCode).emit("typing", { userName });
-  });
-
-  socket.on("stop_typing", ({ roomCode, userName }) => {
-    socket.to(roomCode).emit("stop_typing", { userName });
+    socket.to(roomCode).emit("new_message", message);
+    socket.emit("new_message", message); // This will send the message back to the sender
   });
 
   // === Leave Room ===
   socket.on("leave_room", ({ roomCode, userId }) => {
     const room = rooms.get(roomCode);
     if (room) {
-      const user = room.users.find(u => u.id === userId);
       room.users = room.users.filter(u => u.id !== userId);
       socket.leave(roomCode);
       userRooms.delete(socket.id);
       socket.to(roomCode).emit("user_left", { id: userId });
-
-      // 🔔 Leave notification
-      socket.to(roomCode).emit("notification", {
-        type: "user_left",
-        message: `${user?.name || "A user"} left the chat.`
-      });
     }
   });
 
@@ -149,16 +110,9 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomCode);
     if (!room) return;
 
-    const user = room.users.find(u => u.id === socket.id);
     room.users = room.users.filter(u => u.id !== socket.id);
     socket.to(roomCode).emit("user_left", { id: socket.id });
     userRooms.delete(socket.id);
-
-    // 🔔 Disconnect notification
-    socket.to(roomCode).emit("notification", {
-      type: "user_left",
-      message: `${user?.name || "A user"} disconnected.`
-    });
 
     if (room.users.length === 0) {
       rooms.delete(roomCode);
